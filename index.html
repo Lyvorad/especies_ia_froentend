@@ -392,12 +392,29 @@
           ? `<span class="text-xs bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded-full px-2 py-0.5 ml-2">✏️ Completar: ${campoLabel}</span>`
           : '';
 
-        const deletreoHTML = (campo && campo !== 'ninguno' && item.campo_a_completar_deletreado)
-          ? `<div class="mt-2 p-2 bg-slate-700/50 rounded-lg border border-amber-500/30">
+        // Construir HTML del deletreo
+        let deletreoHTML = '';
+        if (campo && campo !== 'ninguno' && item.campo_a_completar_deletreado) {
+          if (campo === 'nombre_comun') {
+            // Puede haber varios nombres separados por " | "
+            const partesDeletetreo = item.campo_a_completar_deletreado.split(' | ');
+            const nombresLista = item.nombres_comunes_lista || [item.nombre_comun];
+            deletreoHTML = `<div class="mt-2 p-2 bg-slate-700/50 rounded-lg border border-amber-500/30">
+               <p class="text-xs text-amber-300 font-semibold mb-1">Deletreo de nombres:</p>`;
+            partesDeletetreo.forEach((deletreo, i) => {
+              const nombreOriginal = nombresLista[i] || '';
+              deletreoHTML += `<p class="text-xs text-slate-400 font-mono mb-0.5">
+                <span class="text-amber-200">${i + 1}. ${nombreOriginal}</span> → ${deletreo.trim()}
+              </p>`;
+            });
+            deletreoHTML += `</div>`;
+          } else {
+            deletreoHTML = `<div class="mt-2 p-2 bg-slate-700/50 rounded-lg border border-amber-500/30">
                <p class="text-xs text-amber-300 font-semibold mb-1">Deletreo de ${campoLabel}:</p>
                <p class="text-xs text-slate-300 font-mono leading-relaxed">${item.campo_a_completar_deletreado}</p>
-             </div>`
-          : '';
+             </div>`;
+          }
+        }
 
         card.innerHTML = `
           <div class="flex items-center justify-between mb-2 border-b border-slate-700/60 pb-2">
@@ -406,7 +423,7 @@
               ${badgeCampo}
             </div>
             <button onclick="speakSingle(${index})" class="text-xs text-slate-400 hover:text-emerald-400">
-              <i class="fa-solid fa-volume-high"></i> Escuchar solo esta
+              <i class="fa-solid fa-volume-high"></i> Escuchar
             </button>
           </div>
           <p class="text-sm text-slate-300 mb-1">
@@ -466,6 +483,32 @@
       playCycle();
     }
 
+    // Helper: lee el deletreo del campo_a_completar por voz.
+    // Si campo es nombre_comun con varios nombres (separados por " | "), los lee uno a uno.
+    async function speakSpelling(item) {
+      const campo = (item.campo_a_completar || '').toLowerCase();
+      if (!campo || campo === 'ninguno' || !item.campo_a_completar_deletreado) return;
+
+      if (campo === 'nombre_comun') {
+        const partesDeletetreo = item.campo_a_completar_deletreado.split(' | ');
+        const nombresLista = item.nombres_comunes_lista || [item.nombre_comun];
+        for (let i = 0; i < partesDeletetreo.length; i++) {
+          if (!isSpeaking) break;
+          const nombreHablado = nombresLista[i] || `nombre ${i + 1}`;
+          // Anuncia el nombre original y luego deletrea
+          await speakUtterance(`${nombreHablado}.`, 0.9);
+          if (!isSpeaking) break;
+          await speakUtterance(`Deletreo: ${formatSpelling(partesDeletetreo[i].trim())}.`, 0.35);
+          if (isSpeaking && i < partesDeletetreo.length - 1) {
+            await new Promise(r => setTimeout(r, 600));
+          }
+        }
+      } else {
+        const nombreCampo = campo === 'especie' ? 'Nombre científico' : 'Familia';
+        await speakUtterance(`Deletreo de ${nombreCampo}: ${formatSpelling(item.campo_a_completar_deletreado)}.`, 0.35);
+      }
+    }
+
     async function playCycle() {
       if (!isSpeaking) return;
 
@@ -485,17 +528,10 @@
 
           if (!isSpeaking) break;
 
-          // 2. Deletreo LENTO solo del campo que faltaba completar (velocidad 0.35)
-          const campo = (item.campo_a_completar || '').toLowerCase();
-          if (campo && campo !== 'ninguno' && item.campo_a_completar_deletreado) {
-            const nombreCampo = campo === 'nombre_comun' ? 'Nombre común'
-                              : campo === 'especie'      ? 'Nombre científico'
-                              : 'Familia';
-            const textoDeletreo = `Deletreo de ${nombreCampo}: ${formatSpelling(item.campo_a_completar_deletreado)}.`;
-            await speakUtterance(textoDeletreo, 0.35);
-          }
+          // 2. Deletreo LENTO solo del campo que faltaba completar
+          await speakSpelling(item);
 
-          if (isSpeaking) await new Promise(r => setTimeout(r, 1200)); // Pausa breve entre repeticiones
+          if (isSpeaking) await new Promise(r => setTimeout(r, 1200)); // Pausa entre repeticiones
         }
 
         unhighlightCard(index);
@@ -582,14 +618,7 @@
       const textoNormal = `Nombre común: ${item.nombre_comun}. Nombre científico: ${item.especie}. Familia: ${item.familia}.`;
       await speakUtterance(textoNormal, 0.9);
 
-      const campo = (item.campo_a_completar || '').toLowerCase();
-      if (campo && campo !== 'ninguno' && item.campo_a_completar_deletreado) {
-        const nombreCampo = campo === 'nombre_comun' ? 'Nombre común'
-                          : campo === 'especie'      ? 'Nombre científico'
-                          : 'Familia';
-        const textoDeletreo = `Deletreo de ${nombreCampo}: ${formatSpelling(item.campo_a_completar_deletreado)}.`;
-        await speakUtterance(textoDeletreo, 0.35);
-      }
+      await speakSpelling(item);
 
       isSpeaking = false;
       unhighlightCard(index);
