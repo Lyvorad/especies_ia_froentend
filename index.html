@@ -30,6 +30,23 @@
 
   <main class="flex-1 max-w-2xl w-full mx-auto p-4 flex flex-col gap-6">
 
+    <!-- Indicador de Conexión al Servidor (Backend) -->
+    <div id="serverStatusCard" class="p-3.5 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-between text-sm transition-all duration-300">
+      <div class="flex items-center gap-3">
+        <div class="relative flex h-3.5 w-3.5 items-center justify-center">
+          <span id="serverPingPulse" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+          <span id="serverPingDot" class="relative inline-flex rounded-full h-3 w-3 bg-amber-500"></span>
+        </div>
+        <div>
+          <p id="serverStatusTitle" class="font-medium text-amber-300">Comprobando servidor...</p>
+          <p id="serverStatusSub" class="text-xs text-slate-400">Reintentando conexión automáticamente...</p>
+        </div>
+      </div>
+      <button id="btnRetryConnect" onclick="checkServerConnection(true)" class="text-xs bg-slate-700 hover:bg-slate-600 text-slate-200 py-1.5 px-3 rounded-lg transition border border-slate-600 flex items-center gap-1.5">
+        <i class="fa-solid fa-arrows-rotate text-xs"></i> Verificar
+      </button>
+    </div>
+
     <!-- Indicador de Audífonos -->
     <div id="headphoneStatus" class="p-3 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-between text-sm">
       <div class="flex items-center gap-3">
@@ -94,16 +111,106 @@
   </main>
 
   <script>
-    // URL Backend desplegado en Render
-    const BACKEND_URL = "https://especies-ia-backend.onrender.com/analizar-examen/";
+    // URLs del Backend
+    const BACKEND_BASE_URL = "https://especies-ia-backend.onrender.com";
+    const HEALTH_URL = `${BACKEND_BASE_URL}/`;
+    const ANALYZE_URL = `${BACKEND_BASE_URL}/analizar-examen/`;
 
     // Estados
+    let isServerConnected = false;
+    let isCheckingServer = false;
+    let pendingFile = null;
+    let isUploading = false;
     let currentResults = [];
     let isSpeaking = false;
     let isPaused = false;
     let currentUtterance = null;
     let wakeLock = null;
     let hasHeadphones = false;
+
+    // --- 0. Detección de Estado del Servidor y Reconexión Automática ---
+    async function checkServerConnection(isManual = false) {
+      if (isCheckingServer && !isManual) return;
+      isCheckingServer = true;
+
+      const card = document.getElementById('serverStatusCard');
+      const pulse = document.getElementById('serverPingPulse');
+      const dot = document.getElementById('serverPingDot');
+      const title = document.getElementById('serverStatusTitle');
+      const sub = document.getElementById('serverStatusSub');
+      const btn = document.getElementById('btnRetryConnect');
+
+      if (isManual) {
+        btn.innerHTML = '<i class="fa-solid fa-spinner animate-spin text-xs"></i> Conectando...';
+        btn.disabled = true;
+      }
+
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+        const response = await fetch(HEALTH_URL, {
+          method: 'GET',
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+
+        if (response.ok) {
+          isServerConnected = true;
+          pulse.className = "animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75";
+          dot.className = "relative inline-flex rounded-full h-3 w-3 bg-emerald-500";
+          title.className = "font-medium text-emerald-400";
+          title.textContent = "Servidor Conectado";
+          
+          if (pendingFile) {
+            sub.textContent = "¡Conexión lista! Enviando foto almacenada...";
+            sub.className = "text-xs text-emerald-300 font-semibold animate-pulse";
+          } else {
+            sub.textContent = "Listo para recibir y analizar imágenes";
+            sub.className = "text-xs text-slate-400";
+          }
+
+          card.className = "p-3.5 rounded-xl bg-emerald-950/30 border border-emerald-700/60 flex items-center justify-between text-sm transition-all duration-300";
+
+          // AL TOQUE: Si hay una foto esperando, la envía de inmediato
+          if (pendingFile && !isUploading) {
+            processPendingUpload();
+          }
+        } else {
+          throw new Error(`Status Code: ${response.status}`);
+        }
+      } catch (err) {
+        isServerConnected = false;
+        pulse.className = "animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75";
+        dot.className = "relative inline-flex rounded-full h-3 w-3 bg-rose-500";
+        title.className = "font-medium text-rose-400";
+        title.textContent = "Sin conexión con el servidor";
+
+        if (pendingFile) {
+          sub.textContent = "Foto guardada. Reintentando conectar al servidor para enviar...";
+          sub.className = "text-xs text-amber-300 font-semibold animate-pulse";
+        } else {
+          sub.textContent = "Insistiendo en conectar en segundo plano...";
+          sub.className = "text-xs text-slate-400";
+        }
+
+        card.className = "p-3.5 rounded-xl bg-rose-950/30 border border-rose-800/60 flex items-center justify-between text-sm transition-all duration-300";
+      } finally {
+        isCheckingServer = false;
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fa-solid fa-arrows-rotate text-xs"></i> Verificar';
+      }
+    }
+
+    // Bucle de reintento/verificación constante (cada 3.5 segundos)
+    setInterval(() => {
+      if (!isUploading) {
+        checkServerConnection();
+      }
+    }, 3500);
+
+    // Iniciar verificación al cargar la web
+    checkServerConnection();
 
     // 1. Detección de Audífonos
     async function checkHeadphones() {
@@ -165,10 +272,44 @@
       }
     }
 
-    // 3. Subida con Reintentos Infinitos
-    async function handleImageUpload(event) {
+    // 3. Manejo de Selección de Imagen y Subida Controlada por Estado
+    function handleImageUpload(event) {
       const file = event.target.files[0];
       if (!file) return;
+
+      // Guardar el archivo seleccionado como pendiente
+      pendingFile = file;
+
+      // Resetear inputs para permitir volver a seleccionar si se desea
+      document.getElementById('cameraInput').value = '';
+      document.getElementById('fileInput').value = '';
+
+      const statusContainer = document.getElementById('statusContainer');
+      const statusMessage = document.getElementById('statusMessage');
+      const retryCount = document.getElementById('retryCount');
+      const resultsList = document.getElementById('resultsList');
+
+      resultsList.innerHTML = '';
+      stopAudio();
+
+      if (!isServerConnected) {
+        statusContainer.classList.remove('hidden');
+        statusMessage.textContent = "Foto guardada. Servidor sin conexión actualmente.";
+        retryCount.textContent = "Insistiendo en conectar... Se enviará automáticamente apenas se restablezca la conexión.";
+        
+        // Forzar chequeo inmediato de conexión
+        checkServerConnection(true);
+      } else {
+        processPendingUpload();
+      }
+    }
+
+    // Procesa el envío de la foto si está conectado
+    async function processPendingUpload() {
+      if (!pendingFile || isUploading || !isServerConnected) return;
+
+      isUploading = true;
+      const fileToSend = pendingFile;
 
       const statusContainer = document.getElementById('statusContainer');
       const statusMessage = document.getElementById('statusMessage');
@@ -176,45 +317,41 @@
       const resultsList = document.getElementById('resultsList');
 
       statusContainer.classList.remove('hidden');
-      resultsList.innerHTML = '';
-      stopAudio();
+      statusMessage.textContent = "Analizando imagen con IA...";
+      retryCount.textContent = "Enviando datos al servidor...";
 
-      let attempts = 0;
-      let success = false;
+      try {
+        const formData = new FormData();
+        formData.append('file', fileToSend);
 
-      while (!success) {
-        attempts++;
-        try {
-          statusMessage.textContent = attempts === 1 
-            ? "Analizando imagen con IA..." 
-            : "Servidor activándose, reintentando transmisión...";
-          
-          retryCount.textContent = attempts > 1 ? `Intento #${attempts}` : '';
+        const response = await fetch(ANALYZE_URL, {
+          method: 'POST',
+          body: formData
+        });
 
-          const formData = new FormData();
-          formData.append('file', file);
-
-          const response = await fetch(BACKEND_URL, {
-            method: 'POST',
-            body: formData
-          });
-
-          if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
-
-          const data = await response.json();
-          currentResults = data.resultados || [];
-          success = true;
-
-        } catch (error) {
-          console.warn(`Intento ${attempts} fallido. Reintentando en 3s...`, error);
-          await new Promise(resolve => setTimeout(resolve, 3000));
+        if (!response.ok) {
+          throw new Error(`HTTP Error: ${response.status}`);
         }
-      }
 
-      statusContainer.classList.add('hidden');
-      renderResults(currentResults);
-      if (currentResults.length > 0) {
-        startLoopingAudio();
+        const data = await response.json();
+        currentResults = data.resultados || [];
+
+        // Éxito: Limpiar foto pendiente
+        pendingFile = null;
+        statusContainer.classList.add('hidden');
+        renderResults(currentResults);
+        if (currentResults.length > 0) {
+          startLoopingAudio();
+        }
+
+      } catch (error) {
+        console.warn("Fallo al enviar imagen. Marcando servidor deshabitado y reintentando conexión...", error);
+        isServerConnected = false;
+        statusMessage.textContent = "Se perdió la conexión durante el envío.";
+        retryCount.textContent = "Reintentando conectar con el servidor...";
+        checkServerConnection(true);
+      } finally {
+        isUploading = false;
       }
     }
 
