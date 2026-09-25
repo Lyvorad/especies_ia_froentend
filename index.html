@@ -381,9 +381,30 @@
         const card = document.createElement('div');
         card.id = `card-especie-${index}`;
         card.className = "bg-slate-800 p-4 rounded-xl border border-slate-700 transition-all duration-300";
+
+        const campo = (item.campo_a_completar || '').toLowerCase();
+        const campoLabel = campo === 'nombre_comun' ? 'Nombre común'
+                         : campo === 'especie'      ? 'Nombre científico'
+                         : campo === 'familia'      ? 'Familia'
+                         : null;
+
+        const badgeCampo = campoLabel
+          ? `<span class="text-xs bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded-full px-2 py-0.5 ml-2">✏️ Completar: ${campoLabel}</span>`
+          : '';
+
+        const deletreoHTML = (campo && campo !== 'ninguno' && item.campo_a_completar_deletreado)
+          ? `<div class="mt-2 p-2 bg-slate-700/50 rounded-lg border border-amber-500/30">
+               <p class="text-xs text-amber-300 font-semibold mb-1">Deletreo de ${campoLabel}:</p>
+               <p class="text-xs text-slate-300 font-mono leading-relaxed">${item.campo_a_completar_deletreado}</p>
+             </div>`
+          : '';
+
         card.innerHTML = `
           <div class="flex items-center justify-between mb-2 border-b border-slate-700/60 pb-2">
-            <span class="text-xs font-bold uppercase tracking-wider text-emerald-400">Especie #${index + 1}</span>
+            <div class="flex items-center flex-wrap gap-1">
+              <span class="text-xs font-bold uppercase tracking-wider text-emerald-400">Especie #${index + 1}</span>
+              ${badgeCampo}
+            </div>
             <button onclick="speakSingle(${index})" class="text-xs text-slate-400 hover:text-emerald-400">
               <i class="fa-solid fa-volume-high"></i> Escuchar solo esta
             </button>
@@ -394,31 +415,50 @@
           <p class="text-sm text-slate-300 mb-1">
             <strong class="text-slate-100">Especie:</strong> <em class="text-emerald-300">${item.especie}</em>
           </p>
-          <p class="text-xs text-slate-400 font-mono mb-2">
-            Deletreo: ${item.especie_deletreada}
-          </p>
           <p class="text-sm text-slate-300 mb-1">
             <strong class="text-slate-100">Familia:</strong> ${item.familia}
           </p>
-          <p class="text-xs text-slate-400 font-mono">
-            Deletreo: ${item.familia_deletreada}
-          </p>
+          ${deletreoHTML}
         `;
         resultsList.appendChild(card);
       });
     }
 
-    // Formatea un texto para que cada letra esté separada por comas y los espacios digan "espacio"
+
+    // Formatea un texto deletreado del backend para el TTS.
+    // El backend ya manda "S, w, i, e, t, e, n, i, a, espacio, m, ..." — solo limpiamos
+    // posibles guiones residuales y devolvemos el texto tal cual para que el TTS lo lea.
     function formatSpelling(str) {
       if (!str) return '';
-      const clean = str.replace(/-/g, ' ').replace(/,/g, ' ');
-      const words = clean.trim().split(/\s+/);
-      const spelledWords = words.filter(w => w.toLowerCase() !== 'espacio').map(w => w.split('').join(', '));
-      return spelledWords.join(' , espacio , ');
+      // Si el backend mandó formato antiguo con guiones (ej: "S-w-i-e-t-e-n-i-a"), convertir
+      // guiones a ", " para que suene a deletreo
+      if (str.includes('-') && !str.includes(',')) {
+        return str.replace(/-/g, ', ');
+      }
+      // Ya viene en formato correcto: "S, w, i, e, t, e, n, i, a, espacio, ..."
+      return str;
     }
 
     // 5. Motor de Audio / Síntesis por Voz en Bucle
     function startLoopingAudio() {
+      if (!hasHeadphones) {
+        // Mostrar advertencia y no reproducir hasta que conecten audífonos
+        const icon = document.getElementById('headphoneIcon');
+        const text = document.getElementById('headphoneText');
+        icon.className = "fa-solid fa-triangle-exclamation text-rose-400 text-lg";
+        text.textContent = "¡Conecte audífonos para escuchar el resultado!";
+        text.className = "font-medium text-rose-400";
+        // Monitorear cambio de dispositivos para reproducir automáticamente al conectar
+        if (navigator.mediaDevices) {
+          navigator.mediaDevices.ondevicechange = async () => {
+            await checkHeadphones();
+            if (hasHeadphones && currentResults.length > 0) {
+              startLoopingAudio();
+            }
+          };
+        }
+        return;
+      }
       stopAudio();
       requestWakeLock();
       isSpeaking = true;
@@ -439,18 +479,21 @@
         for (let rep = 1; rep <= 2; rep++) {
           if (!isSpeaking) break;
 
-          // 1. Lectura normal del texto general (Velocidad normal 0.9)
-          const textoNormal = `Especie ${index + 1}. Nombre común. ${item.nombre_comun}. Nombre científico. ${item.especie}. Familia. ${item.familia}.`;
+          // 1. Lectura normal de todos los campos (velocidad normal 0.9)
+          const textoNormal = `Especie ${index + 1}. Nombre común: ${item.nombre_comun}. Nombre científico: ${item.especie}. Familia: ${item.familia}.`;
           await speakUtterance(textoNormal, 0.9);
 
           if (!isSpeaking) break;
 
-          // 2. Deletreo MUCHO MÁS LENTO (Velocidad 0.35) diciendo "espacio" en cada espacio
-          const deletreoEspecie = formatSpelling(item.especie_deletreada || item.especie);
-          const deletreoFamilia = formatSpelling(item.familia_deletreada || item.familia);
-
-          const textoDeletreo = `Deletreo de nombre científico. ${deletreoEspecie}. Deletreo de familia. ${deletreoFamilia}.`;
-          await speakUtterance(textoDeletreo, 0.35);
+          // 2. Deletreo LENTO solo del campo que faltaba completar (velocidad 0.35)
+          const campo = (item.campo_a_completar || '').toLowerCase();
+          if (campo && campo !== 'ninguno' && item.campo_a_completar_deletreado) {
+            const nombreCampo = campo === 'nombre_comun' ? 'Nombre común'
+                              : campo === 'especie'      ? 'Nombre científico'
+                              : 'Familia';
+            const textoDeletreo = `Deletreo de ${nombreCampo}: ${formatSpelling(item.campo_a_completar_deletreado)}.`;
+            await speakUtterance(textoDeletreo, 0.35);
+          }
 
           if (isSpeaking) await new Promise(r => setTimeout(r, 1200)); // Pausa breve entre repeticiones
         }
@@ -523,21 +566,32 @@
     }
 
     async function speakSingle(index) {
+      if (!hasHeadphones) {
+        const text = document.getElementById('headphoneText');
+        text.textContent = "¡Conecte audífonos para escuchar!";
+        text.className = "font-medium text-rose-400";
+        return;
+      }
       stopAudio();
       const item = currentResults[index];
       if (!item) return;
 
+      isSpeaking = true;
       highlightCard(index);
 
-      const textoNormal = `Nombre común. ${item.nombre_comun}. Nombre científico. ${item.especie}. Familia. ${item.familia}.`;
+      const textoNormal = `Nombre común: ${item.nombre_comun}. Nombre científico: ${item.especie}. Familia: ${item.familia}.`;
       await speakUtterance(textoNormal, 0.9);
 
-      const deletreoEspecie = formatSpelling(item.especie_deletreada || item.especie);
-      const deletreoFamilia = formatSpelling(item.familia_deletreada || item.familia);
-      const textoDeletreo = `Deletreo de nombre científico. ${deletreoEspecie}. Deletreo de familia. ${deletreoFamilia}.`;
+      const campo = (item.campo_a_completar || '').toLowerCase();
+      if (campo && campo !== 'ninguno' && item.campo_a_completar_deletreado) {
+        const nombreCampo = campo === 'nombre_comun' ? 'Nombre común'
+                          : campo === 'especie'      ? 'Nombre científico'
+                          : 'Familia';
+        const textoDeletreo = `Deletreo de ${nombreCampo}: ${formatSpelling(item.campo_a_completar_deletreado)}.`;
+        await speakUtterance(textoDeletreo, 0.35);
+      }
 
-      await speakUtterance(textoDeletreo, 0.35);
-
+      isSpeaking = false;
       unhighlightCard(index);
     }
   </script>
