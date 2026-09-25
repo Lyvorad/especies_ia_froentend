@@ -330,7 +330,15 @@
         });
 
         if (!response.ok) {
-          throw new Error(`HTTP Error: ${response.status}`);
+          let errorDetail = `HTTP ${response.status}`;
+          try {
+            const errJson = await response.json();
+            if (errJson.detail) errorDetail = errJson.detail;
+          } catch(e) {
+            const errTxt = await response.text().catch(() => '');
+            if (errTxt) errorDetail = errTxt;
+          }
+          throw new Error(errorDetail);
         }
 
         const data = await response.json();
@@ -345,11 +353,20 @@
         }
 
       } catch (error) {
-        console.warn("Fallo al enviar imagen. Marcando servidor deshabitado y reintentando conexión...", error);
-        isServerConnected = false;
-        statusMessage.textContent = "Se perdió la conexión durante el envío.";
-        retryCount.textContent = "Reintentando conectar con el servidor...";
-        checkServerConnection(true);
+        console.warn("Fallo en la subida de imagen:", error);
+
+        // Si es un error de respuesta HTTP del servidor (ej 500, 400), el servidor SÍ está conectado pero falló el procesamiento
+        if (error.message && (error.message.includes("HTTP") || error.message.includes("Error procesando") || error.message.includes("500") || error.message.includes("400"))) {
+          statusMessage.textContent = "Error al procesar la foto con la IA";
+          retryCount.textContent = error.message;
+          pendingFile = null; // Se despeja la foto para permitir subir otra
+        } else {
+          // Si fue fallo de red/conexión
+          isServerConnected = false;
+          statusMessage.textContent = "Se perdió la conexión durante el envío.";
+          retryCount.textContent = "Reintentando conectar con el servidor...";
+          checkServerConnection(true);
+        }
       } finally {
         isUploading = false;
       }
