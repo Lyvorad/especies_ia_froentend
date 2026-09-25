@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Asistente de Especies Forestales</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    @keyframes pulse-ring {
+      0% { transform: scale(0.95); opacity: 0.8; }
+      50% { transform: scale(1.05); opacity: 0.4; }
+      100% { transform: scale(0.95); opacity: 0.8; }
+    }
+    .speaking-card {
+      border-color: #10B981 !important;
+      box-shadow: 0 0 15px rgba(16, 185, 129, 0.4);
+    }
+  </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col font-sans">
+
+  <!-- Header -->
+  <header class="bg-slate-800 border-b border-slate-700 py-4 px-6 text-center shadow-lg">
+    <h1 class="text-xl font-bold text-emerald-400 flex items-center justify-center gap-2">
+      <i class="fa-solid font-leaf text-emerald-500"></i> BotánicIA Reader
+    </h1>
+    <p class="text-xs text-slate-400 mt-1">Lector de exámenes y fichas taxonómicas</p>
+  </header>
+
+  <main class="flex-1 max-w-2xl w-full mx-auto p-4 flex flex-col gap-6">
+
+    <!-- Indicador de Audífonos -->
+    <div id="headphoneStatus" class="p-3 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-between text-sm">
+      <div class="flex items-center gap-3">
+        <i id="headphoneIcon" class="fa-solid fa-headphones text-slate-500 text-lg"></i>
+        <div>
+          <p id="headphoneText" class="font-medium text-slate-300">Comprobando audífonos...</p>
+          <p class="text-xs text-slate-400">Requerido para síntesis por voz</p>
+        </div>
+      </div>
+      <button onclick="checkHeadphones()" class="text-xs bg-slate-700 hover:bg-slate-600 text-slate-200 py-1 px-3 rounded-lg transition">
+        Verificar
+      </button>
+    </div>
+
+    <!-- Opciones de Selección de Imagen -->
+    <div class="grid grid-cols-2 gap-4">
+      <!-- Input Cámara -->
+      <label class="flex flex-col items-center justify-center p-6 bg-emerald-950/40 border-2 border-dashed border-emerald-600/50 hover:border-emerald-500 rounded-2xl cursor-pointer transition active:scale-95 text-center">
+        <i class="fa-solid fa-camera text-3xl text-emerald-400 mb-2"></i>
+        <span class="font-semibold text-emerald-200 text-sm">Tomar Foto</span>
+        <span class="text-xs text-emerald-500 mt-1">Cámara directa</span>
+        <input type="file" id="cameraInput" accept="image/*" capture="environment" class="hidden" onchange="handleImageUpload(event)">
+      </label>
+
+      <!-- Input Archivos / Galería -->
+      <label class="flex flex-col items-center justify-center p-6 bg-slate-800/80 border-2 border-dashed border-slate-600 hover:border-slate-500 rounded-2xl cursor-pointer transition active:scale-95 text-center">
+        <i class="fa-solid fa-folder-open text-3xl text-slate-300 mb-2"></i>
+        <span class="font-semibold text-slate-200 text-sm">Abrir Galería</span>
+        <span class="text-xs text-slate-400 mt-1">Archivos e imágenes</span>
+        <input type="file" id="fileInput" accept="image/*" class="hidden" onchange="handleImageUpload(event)">
+      </label>
+    </div>
+
+    <!-- Previsualización / Estado del Servidor -->
+    <div id="statusContainer" class="hidden flex flex-col items-center justify-center p-6 bg-slate-800/50 rounded-2xl border border-slate-700 text-center">
+      <div id="spinner" class="animate-spin text-emerald-400 text-3xl mb-3">
+        <i class="fa-solid fa-circle-notch"></i>
+      </div>
+      <p id="statusMessage" class="font-medium text-slate-200">Enviando imagen al servidor...</p>
+      <p id="retryCount" class="text-xs text-emerald-400 mt-1"></p>
+    </div>
+
+    <!-- Controles de Audio -->
+    <div id="audioControls" class="hidden bg-slate-800 p-4 rounded-xl border border-slate-700 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <button id="btnPlayPause" onclick="toggleAudio()" class="w-12 h-12 bg-emerald-500 hover:bg-emerald-400 text-slate-900 rounded-full flex items-center justify-center text-xl transition shadow-lg">
+          <i class="fa-solid fa-pause"></i>
+        </button>
+        <div>
+          <p class="font-semibold text-sm text-slate-100" id="audioStateLabel">Reproduciendo en bucle</p>
+          <p class="text-xs text-slate-400">Repetición activa (2x por especie)</p>
+        </div>
+      </div>
+      <button onclick="stopAudio()" class="text-xs bg-rose-500/20 text-rose-300 hover:bg-rose-500/30 py-2 px-3 rounded-lg border border-rose-500/30 transition">
+        Detener
+      </button>
+    </div>
+
+    <!-- Vista de Resultados -->
+    <div id="resultsList" class="flex flex-col gap-4 mb-8"></div>
+
+  </main>
+
+  <script>
+    // URL Backend desplegado en Render
+    const BACKEND_URL = "https://especies-ia-backend.onrender.com/analizar-examen/";
+
+    // Estados
+    let currentResults = [];
+    let isSpeaking = false;
+    let isPaused = false;
+    let currentUtterance = null;
+    let wakeLock = null;
+    let hasHeadphones = false;
+
+    // 1. Detección de Audífonos
+    async function checkHeadphones() {
+      const icon = document.getElementById('headphoneIcon');
+      const text = document.getElementById('headphoneText');
+      
+      try {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+          text.textContent = "No se puede detectar audífonos automáticamente.";
+          hasHeadphones = true; // Fallback
+          return;
+        }
+
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const audioOutputs = devices.filter(d => d.kind === 'audiooutput');
+
+        hasHeadphones = audioOutputs.some(device => 
+          device.label.toLowerCase().includes('headphone') || 
+          device.label.toLowerCase().includes('auricular') ||
+          device.label.toLowerCase().includes('headset') ||
+          device.label.toLowerCase().includes('handsfree')
+        );
+
+        if (hasHeadphones) {
+          icon.className = "fa-solid fa-headphones text-emerald-400 text-lg";
+          text.textContent = "Audífonos detectados y listos";
+          text.className = "font-medium text-emerald-400";
+        } else {
+          icon.className = "fa-solid fa-volume-xmark text-amber-400 text-lg";
+          text.textContent = "Conecte audífonos para mejor experiencia";
+          text.className = "font-medium text-amber-400";
+        }
+      } catch (e) {
+        hasHeadphones = true; // Asumir verdadero para evitar bloquear funcionalidad
+        text.textContent = "Audífonos habilitados";
+      }
+    }
+
+    // Listener para cuando se conectan/desconectan audífonos en tiempo real
+    if (navigator.mediaDevices) {
+      navigator.mediaDevices.ondevicechange = checkHeadphones;
+    }
+    checkHeadphones();
+
+    // 2. Mantener la Pantalla y CPU despiertos (Screen Wake Lock)
+    async function requestWakeLock() {
+      try {
+        if ('wakeLock' in navigator) {
+          wakeLock = await navigator.wakeLock.request('screen');
+        }
+      } catch (err) {
+        console.warn(`Wake Lock Error: ${err.name}, ${err.message}`);
+      }
+    }
+
+    function releaseWakeLock() {
+      if (wakeLock !== null) {
+        wakeLock.release().then(() => { wakeLock = null; });
+      }
+    }
+
+    // 3. Subida con Reintentos Infinitos
+    async function handleImageUpload(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      const statusContainer = document.getElementById('statusContainer');
+      const statusMessage = document.getElementById('statusMessage');
+      const retryCount = document.getElementById('retryCount');
+      const resultsList = document.getElementById('resultsList');
+
+      statusContainer.classList.remove('hidden');
+      resultsList.innerHTML = '';
+      stopAudio();
+
+      let attempts = 0;
+      let success = false;
+
+      while (!success) {
+        attempts++;
+        try {
+          statusMessage.textContent = attempts === 1 
+            ? "Analizando imagen con IA..." 
+            : "Servidor activándose, reintentando transmisión...";
+          
+          retryCount.textContent = attempts > 1 ? `Intento #${attempts}` : '';
+
+          const formData = new FormData();
+          formData.append('file', file);
+
+          const response = await fetch(BACKEND_URL, {
+            method: 'POST',
+            body: formData
+          });
+
+          if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
+
+          const data = await response.json();
+          currentResults = data.resultados || [];
+          success = true;
+
+        } catch (error) {
+          console.warn(`Intento ${attempts} fallido. Reintentando en 3s...`, error);
+          await new Promise(resolve => setTimeout(resolve, 3000));
+        }
+      }
+
+      statusContainer.classList.add('hidden');
+      renderResults(currentResults);
+      if (currentResults.length > 0) {
+        startLoopingAudio();
+      }
+    }
+
+    // 4. Renderizar resultados en pantalla
+    function renderResults(results) {
+      const resultsList = document.getElementById('resultsList');
+      resultsList.innerHTML = '';
+
+      results.forEach((item, index) => {
+        const card = document.createElement('div');
+        card.id = `card-especie-${index}`;
+        card.className = "bg-slate-800 p-4 rounded-xl border border-slate-700 transition-all duration-300";
+        card.innerHTML = `
+          <div class="flex items-center justify-between mb-2 border-b border-slate-700/60 pb-2">
+            <span class="text-xs font-bold uppercase tracking-wider text-emerald-400">Especie #${index + 1}</span>
+            <button onclick="speakSingle(${index})" class="text-xs text-slate-400 hover:text-emerald-400">
+              <i class="fa-solid fa-volume-high"></i> Escuchar solo esta
+            </button>
+          </div>
+          <p class="text-sm text-slate-300 mb-1">
+            <strong class="text-slate-100">Nombre común:</strong> ${item.nombre_comun}
+          </p>
+          <p class="text-sm text-slate-300 mb-1">
+            <strong class="text-slate-100">Especie:</strong> <em class="text-emerald-300">${item.especie}</em>
+          </p>
+          <p class="text-xs text-slate-400 font-mono mb-2">
+            Deletreo: ${item.especie_deletreada}
+          </p>
+          <p class="text-sm text-slate-300 mb-1">
+            <strong class="text-slate-100">Familia:</strong> ${item.familia}
+          </p>
+          <p class="text-xs text-slate-400 font-mono">
+            Deletreo: ${item.familia_deletreada}
+          </p>
+        `;
+        resultsList.appendChild(card);
+      });
+    }
+
+    // 5. Motor de Audio / Síntesis por Voz en Bucle
+    function startLoopingAudio() {
+      stopAudio();
+      requestWakeLock();
+      isSpeaking = true;
+      document.getElementById('audioControls').classList.remove('hidden');
+      playCycle();
+    }
+
+    async function playCycle() {
+      if (!isSpeaking) return;
+
+      const synth = window.speechSynthesis;
+
+      for (let index = 0; index < currentResults.length; index++) {
+        if (!isSpeaking) break;
+
+        const item = currentResults[index];
+        highlightCard(index);
+
+        // Repetir 2 VECES por especie
+        for (let rep = 1; rep <= 2; rep++) {
+          if (!isSpeaking) break;
+
+          const texto = `Especie ${index + 1}. ` +
+            `Nombre común. ${item.nombre_comun}. ` +
+            `Nombre científico. ${item.especie}. ` +
+            `Deletreo de nombre científico. ${item.especie_deletreada}. ` +
+            `Familia. ${item.familia}. ` +
+            `Deletreo de familia. ${item.familia_deletreada}.`;
+
+          await speakUtterance(texto);
+          if (isSpeaking) await new Promise(r => setTimeout(r, 1000)); // Pausa breve entre repeticiones
+        }
+
+        unhighlightCard(index);
+      }
+
+      // Reiniciar bucle infinito
+      if (isSpeaking) {
+        setTimeout(() => playCycle(), 2000);
+      }
+    }
+
+    function speakUtterance(text) {
+      return new Promise((resolve) => {
+        const synth = window.speechSynthesis;
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = 'es-ES';
+        utterance.rate = 0.85; // Velocidad ligeramente reducida para nitidez
+
+        utterance.onend = () => resolve();
+        utterance.onerror = () => resolve();
+
+        currentUtterance = utterance;
+        synth.speak(utterance);
+      });
+    }
+
+    function highlightCard(index) {
+      const card = document.getElementById(`card-especie-${index}`);
+      if (card) {
+        card.classList.add('speaking-card');
+        card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }
+
+    function unhighlightCard(index) {
+      const card = document.getElementById(`card-especie-${index}`);
+      if (card) {
+        card.classList.remove('speaking-card');
+      }
+    }
+
+    function toggleAudio() {
+      const synth = window.speechSynthesis;
+      const btn = document.getElementById('btnPlayPause');
+      const label = document.getElementById('audioStateLabel');
+
+      if (synth.speaking && !synth.paused) {
+        synth.pause();
+        btn.innerHTML = '<i class="fa-solid fa-play"></i>';
+        label.textContent = "Pausado";
+      } else if (synth.paused) {
+        synth.resume();
+        btn.innerHTML = '<i class="fa-solid fa-pause"></i>';
+        label.textContent = "Reproduciendo en bucle";
+      } else {
+        startLoopingAudio();
+      }
+    }
+
+    function stopAudio() {
+      isSpeaking = false;
+      const synth = window.speechSynthesis;
+      synth.cancel();
+      releaseWakeLock();
+      
+      document.querySelectorAll('.speaking-card').forEach(el => el.classList.remove('speaking-card'));
+      document.getElementById('audioControls').classList.add('hidden');
+    }
+
+    function speakSingle(index) {
+      stopAudio();
+      const item = currentResults[index];
+      if (!item) return;
+
+      const texto = `Nombre común. ${item.nombre_comun}. ` +
+        `Nombre científico. ${item.especie}. ` +
+        `Deletreo. ${item.especie_deletreada}. ` +
+        `Familia. ${item.familia}. ` +
+        `Deletreo de familia. ${item.familia_deletreada}.`;
+
+      highlightCard(index);
+      speakUtterance(texto).then(() => unhighlightCard(index));
+    }
+  </script>
+</body>
+</html>
