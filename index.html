@@ -408,6 +408,15 @@
       });
     }
 
+    // Formatea un texto para que cada letra esté separada por comas y los espacios digan "espacio"
+    function formatSpelling(str) {
+      if (!str) return '';
+      const clean = str.replace(/-/g, ' ').replace(/,/g, ' ');
+      const words = clean.trim().split(/\s+/);
+      const spelledWords = words.filter(w => w.toLowerCase() !== 'espacio').map(w => w.split('').join(', '));
+      return spelledWords.join(' , espacio , ');
+    }
+
     // 5. Motor de Audio / Síntesis por Voz en Bucle
     function startLoopingAudio() {
       stopAudio();
@@ -420,8 +429,6 @@
     async function playCycle() {
       if (!isSpeaking) return;
 
-      const synth = window.speechSynthesis;
-
       for (let index = 0; index < currentResults.length; index++) {
         if (!isSpeaking) break;
 
@@ -432,15 +439,20 @@
         for (let rep = 1; rep <= 2; rep++) {
           if (!isSpeaking) break;
 
-          const texto = `Especie ${index + 1}. ` +
-            `Nombre común. ${item.nombre_comun}. ` +
-            `Nombre científico. ${item.especie}. ` +
-            `Deletreo de nombre científico. ${item.especie_deletreada}. ` +
-            `Familia. ${item.familia}. ` +
-            `Deletreo de familia. ${item.familia_deletreada}.`;
+          // 1. Lectura normal del texto general (Velocidad normal 0.9)
+          const textoNormal = `Especie ${index + 1}. Nombre común. ${item.nombre_comun}. Nombre científico. ${item.especie}. Familia. ${item.familia}.`;
+          await speakUtterance(textoNormal, 0.9);
 
-          await speakUtterance(texto);
-          if (isSpeaking) await new Promise(r => setTimeout(r, 1000)); // Pausa breve entre repeticiones
+          if (!isSpeaking) break;
+
+          // 2. Deletreo MUCHO MÁS LENTO (Velocidad 0.35) diciendo "espacio" en cada espacio
+          const deletreoEspecie = formatSpelling(item.especie_deletreada || item.especie);
+          const deletreoFamilia = formatSpelling(item.familia_deletreada || item.familia);
+
+          const textoDeletreo = `Deletreo de nombre científico. ${deletreoEspecie}. Deletreo de familia. ${deletreoFamilia}.`;
+          await speakUtterance(textoDeletreo, 0.35);
+
+          if (isSpeaking) await new Promise(r => setTimeout(r, 1200)); // Pausa breve entre repeticiones
         }
 
         unhighlightCard(index);
@@ -452,12 +464,12 @@
       }
     }
 
-    function speakUtterance(text) {
+    function speakUtterance(text, speed = 0.85) {
       return new Promise((resolve) => {
         const synth = window.speechSynthesis;
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.lang = 'es-ES';
-        utterance.rate = 0.85; // Velocidad ligeramente reducida para nitidez
+        utterance.rate = speed; // Velocidad dinámica: 0.9 lectura normal, 0.35 deletreo súper lento
 
         utterance.onend = () => resolve();
         utterance.onerror = () => resolve();
@@ -510,19 +522,23 @@
       document.getElementById('audioControls').classList.add('hidden');
     }
 
-    function speakSingle(index) {
+    async function speakSingle(index) {
       stopAudio();
       const item = currentResults[index];
       if (!item) return;
 
-      const texto = `Nombre común. ${item.nombre_comun}. ` +
-        `Nombre científico. ${item.especie}. ` +
-        `Deletreo. ${item.especie_deletreada}. ` +
-        `Familia. ${item.familia}. ` +
-        `Deletreo de familia. ${item.familia_deletreada}.`;
-
       highlightCard(index);
-      speakUtterance(texto).then(() => unhighlightCard(index));
+
+      const textoNormal = `Nombre común. ${item.nombre_comun}. Nombre científico. ${item.especie}. Familia. ${item.familia}.`;
+      await speakUtterance(textoNormal, 0.9);
+
+      const deletreoEspecie = formatSpelling(item.especie_deletreada || item.especie);
+      const deletreoFamilia = formatSpelling(item.familia_deletreada || item.familia);
+      const textoDeletreo = `Deletreo de nombre científico. ${deletreoEspecie}. Deletreo de familia. ${deletreoFamilia}.`;
+
+      await speakUtterance(textoDeletreo, 0.35);
+
+      unhighlightCard(index);
     }
   </script>
 </body>
